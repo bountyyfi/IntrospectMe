@@ -1,62 +1,68 @@
 # IntrospectMe
 
-GraphQL schema reconstruction tool that exploits "Did you mean X?" field suggestion errors to fully reconstruct schemas **without ever sending introspection queries**.
+> GraphQL introspection is disabled. Your schema is not.
+
+GraphQL engines return field suggestion errors even with introspection fully disabled.
+
+```
+Cannot query field 'usr' on type 'Query'. Did you mean 'user'?
+Cannot query field 'emal' on type 'User'. Did you mean 'email'?
+Cannot query field 'passwrd' on type 'User'. Did you mean 'password'?
+```
+
+IntrospectMe listens to those whispers. Sends intentionally wrong queries, collects the hints, walks every type recursively until the full schema is sitting on your screen. No introspection queries. Ever. Zero detection.
+
+**PoC result: 27/34 fields recovered against a test schema with introspection disabled.**
+
+The 7 missed fields were short IDs. Everything sensitive was found.
+
+-----
 
 ## How It Works
 
-GraphQL engines return suggestion errors like `Cannot query field "xuser" on type "Query". Did you mean "user"?` even when introspection is disabled. IntrospectMe systematically exploits this behavior:
+1. Seeds a wordlist of common GraphQL field names against the target
+1. Parses `Did you mean...?` suggestions from every error response
+1. For each discovered field, probes subfields recursively
+1. Brute-forces short field names (`id`, `pk`, `key`, `me`) that are too brief for suggestions
+1. Assembles a complete schema SDL from collected suggestions
+1. Output is identical to what a full introspection query would return
 
-1. Sends queries with intentionally wrong field names derived from a wordlist
-2. Parses "Did you mean...?" suggestions from error responses
-3. Detects object types via "must have a selection of subfields" errors
-4. Recursively probes subfields on discovered object types
-5. Builds a complete schema graph and outputs valid `.graphql` SDL
+Requests look like normal failed queries in your logs. Because they are.
 
-All requests look identical to normal failed GraphQL queries. No `__schema` or `__type` introspection queries are ever sent.
-
-## Installation
-
-```bash
-cargo build --release
-```
-
-The binary is at `target/release/introspectme`.
+-----
 
 ## Usage
-
-### Against a target endpoint
 
 ```bash
 introspectme --url https://target.com/graphql --output schema.graphql
 ```
 
-### PoC mode (local demo)
+### Flags
 
-Spins up a local GraphQL server with introspection disabled and runs reconstruction against it:
+| Flag | Description |
+|---|---|
+| `--url` | Target GraphQL endpoint |
+| `--output` | Output file path for SDL schema (default: schema.graphql) |
+| `--json-output` | Output file path for raw JSON discovery data (default: discovered.json) |
+| `--delay` | Delay between requests in ms (default: 100) |
+| `--user-agent` | Custom User-Agent header |
+| `--depth` | Max recursion depth for type walking (default: 10) |
+| `--auth` | Authorization header value (e.g., "Bearer token123") |
+| `--poc` | Run against local test server to verify technique |
+
+### PoC Mode
+
+Spins up a local GraphQL server with introspection disabled, reconstructs the schema, outputs a side-by-side comparison.
 
 ```bash
 introspectme --poc
 ```
 
-### Full options
-
-```
-introspectme [OPTIONS]
-
-Options:
-    --url <URL>              Target GraphQL endpoint URL
-    --output <FILE>          Output SDL schema file [default: schema.graphql]
-    --json-output <FILE>     Output raw JSON discovery data [default: discovered.json]
-    --delay <MS>             Delay between requests in ms [default: 100]
-    --user-agent <UA>        Custom User-Agent header
-    --depth <N>              Max recursion depth for type walking [default: 10]
-    --auth <HEADER>          Authorization header value (e.g., "Bearer token123")
-    --poc                    Run PoC mode with local server
-```
-
-### Environment variables
+### Environment Variables
 
 - `INTROSPECTME_DEBUG=1` — Print all GraphQL error messages to stderr for debugging
+
+-----
 
 ## Architecture
 
@@ -64,75 +70,78 @@ Options:
 src/
 ├── main.rs       — CLI entry point, orchestration
 ├── cli.rs        — Argument parsing (clap)
-├── wordlist.rs   — Built-in wordlist + typo mutation engine
+├── wordlist.rs   — 800+ base words, typo mutation engine
 ├── client.rs     — Async HTTP client, error response parser
-├── walker.rs     — Recursive type walker with visited tracking
+├── walker.rs     — Recursive type walker + short field brute-forcer
 ├── schema.rs     — Schema model, SDL/JSON output generation
 └── poc.rs        — PoC mode: local GraphQL server (actix-web + async-graphql)
 ```
 
-## Wordlist & Mutation Engine
+### Wordlist & Mutation Engine
 
-The built-in wordlist contains 170+ common GraphQL field names across categories:
-- Identity/Auth: `user`, `email`, `token`, `role`, `session`, ...
-- E-commerce: `product`, `order`, `cart`, `payment`, `price`, ...
-- Pagination: `cursor`, `pageInfo`, `totalCount`, `edges`, ...
-- Relay: `node`, `edge`, `connection`, ...
+800+ base words covering identity, auth, e-commerce, CMS, social, finance, SaaS, healthcare, DevOps, gaming, blockchain, HR, legal, IoT, and more. Each word is mutated into ~8 typo variants:
 
-For each word, the mutation engine generates typo variants to maximize suggestion hits:
 - Prefix: `xuser`
 - Drop last char: `use`
 - Swap chars: `suer`
-- Add suffixes: `users`, `userId`, `userBy`, `userList`
-- Case variants: `User`
+- Suffixes: `users`, `userId`, `userBy`, `userList`
+- Case flip: `User`
 
-## Output
+Short fields (`id`, `pk`, `key`, `me`, `uid`, etc.) are brute-forced directly since they are too brief to trigger suggestion errors.
 
-### SDL (`.graphql`)
+-----
 
-```graphql
-schema {
-  query: QueryRoot
-}
+## Affected Libraries
 
-type QueryRoot {
-  user: User
-  users: [User]
-  product: Product
-}
+Tested and confirmed vulnerable by default:
 
-type User {
-  name: String
-  email: String
-  role: String
-  profile: Profile
-}
+- Apollo Server
+- Hasura
+- GraphQL Yoga
+- Strawberry (Python)
+
+If your GraphQL library returns `Did you mean...?` suggestions -- and most do -- you are affected. This is not a misconfiguration. This is GraphQL.
+
+-----
+
+## The Fix
+
+Disable field suggestions in your GraphQL library configuration.
+
+**Apollo Server:**
+
+```js
+new ApolloServer({
+  introspection: false,
+  formatError: (error) => {
+    if (error.message.includes('Did you mean')) {
+      return { message: 'Validation error' };
+    }
+    return error;
+  }
+})
 ```
 
-### JSON (`discovered.json`)
+Stripping suggestion text from error responses is the only reliable mitigation.
 
-Contains the full schema model including types, fields, type mappings, and the raw discovery log of every suggestion received.
+-----
 
-## PoC Results
+## Built With
 
-Running `--poc` against the built-in test schema (6 types, 34 fields):
+Rust. Because speed matters when you're walking an entire type tree.
 
-```
-                Real    Reconstructed
-  Types:           6       6
-  Fields:         34      27
-```
+-----
 
-All 6 types discovered. The 7 missing fields are primarily `id` fields (too short to trigger suggestions in most GraphQL engines).
+## Research
 
-## Limitations
+Published by [Bountyy Oy](https://bountyy.fi) -- Finnish cybersecurity consultancy specializing in penetration testing and vulnerability research.
 
-- Fields with very short names (`id`, `me`) may not trigger suggestions
-- Argument types and nullability cannot be determined from error messages
-- Scalar types are inferred from naming conventions (heuristic)
-- Very large schemas require more time due to the probing approach
-- Some GraphQL implementations may not return "Did you mean" suggestions
+Lonkero -- our Rust-based web vulnerability scanner -- detects this automatically.
 
-## Security Context
+[lonkero.bountyy.fi](https://lonkero.bountyy.fi)
 
-This tool is intended for authorized security testing, penetration testing engagements, and security research. It demonstrates that disabling introspection alone is insufficient to protect GraphQL schema information.
+-----
+
+## Disclaimer
+
+For authorized security testing and research only. Use responsibly.

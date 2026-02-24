@@ -148,7 +148,7 @@ async fn run_poc_mode(args: &Cli) {
     let client = Arc::new(GraphQLClient::new(
         &url,
         &args.user_agent,
-        10, // fast probing for PoC
+        0, // no delay for localhost PoC
         None,
     ));
     let schema = Arc::new(Mutex::new(ReconstructedSchema::new()));

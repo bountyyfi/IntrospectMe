@@ -165,6 +165,38 @@ impl TypeWalker {
             }
         }
 
+        // Brute-force short root field names
+        self.progress
+            .set_message("Brute-forcing short root fields...".to_string());
+        for &short_field in SHORT_FIELD_BRUTE {
+            if discovered_fields.contains(short_field) {
+                continue;
+            }
+            let query = format!("{{ {} }}", short_field);
+            match self.client.field_exists(&query, short_field).await {
+                Ok(true) => {
+                    let mut schema = self.schema.lock().await;
+                    if schema.add_field(&root_type_name, short_field) {
+                        discovered_fields.insert(short_field.to_string());
+                        self.progress
+                            .println(format!("  [+] Found (brute): {}.{}", root_type_name, short_field));
+                    }
+
+                    // Also check if this is an object type
+                    drop(schema);
+                    let bare_query = format!("{{ {} }}", short_field);
+                    if let Ok(result) = self.client.send_probe(&bare_query).await {
+                        for hint in &result.object_type_hints {
+                            object_fields
+                                .entry(hint.field_name.clone())
+                                .or_insert_with(|| hint.type_name.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         Ok((root_type_name, object_fields.into_iter().collect()))
     }
 
@@ -297,6 +329,43 @@ impl TypeWalker {
             }
         }
 
+        // Phase 3: Brute-force short field names that are too brief for suggestions.
+        // For each short name, send a direct query and check if the server
+        // recognizes it (no "Unknown field" error).
+        self.progress.set_message(format!(
+            "Brute-forcing short fields on {}...",
+            type_name
+        ));
+        for &short_field in SHORT_FIELD_BRUTE {
+            // Skip if already discovered
+            if self.schema.lock().await.types
+                .get(type_name)
+                .map(|t| t.fields.contains_key(short_field))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            // Try each context
+            for ctx in contexts {
+                let query = format!("{{ {} {{ {} }} }}", ctx, short_field);
+                let closing_braces = ctx.matches('{').count();
+                let query = format!("{}{}", query, " }".repeat(closing_braces));
+
+                match self.client.field_exists(&query, short_field).await {
+                    Ok(true) => {
+                        let mut schema = self.schema.lock().await;
+                        if schema.add_field(type_name, short_field) {
+                            self.progress
+                                .println(format!("  [+] Found (brute): {}.{}", type_name, short_field));
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Recurse into child types
         for (field_name, child_type) in &child_object_types {
             self.schema
@@ -317,6 +386,23 @@ impl TypeWalker {
         Ok(())
     }
 }
+
+/// Short / common field names that are too brief to trigger "Did you mean" suggestions.
+/// We brute-force these by checking if the server returns "Unknown field" or not.
+const SHORT_FIELD_BRUTE: &[&str] = &[
+    "id", "pk", "key", "uid", "me", "ok", "ip", "to", "cc", "by",
+    "on", "at", "of", "in", "up", "no", "do", "is", "or", "as",
+    "ref", "url", "uri", "tag", "bio", "age", "dob", "sex", "pin",
+    "otp", "jwt", "ssh", "dns", "vpn", "api", "app", "env", "src",
+    "raw", "img", "svg", "pdf", "doc", "faq", "sku", "ean", "upc",
+    "vat", "tax", "fee", "qty", "sum", "avg", "min", "max", "ttl",
+    "lat", "lng", "lon", "alt", "zip", "geo", "map", "log", "job",
+    "pid", "rid", "tid", "eid", "gid", "cid", "sid", "mid",
+    "cpu", "ram", "gpu", "ssd", "hdd", "mac", "ip4", "ip6",
+    "org", "hub", "pod", "vpc", "cdn", "ssl", "tls", "arn", "iam",
+    "nft", "dao", "gas", "eth", "btc", "abi", "elo", "mmr",
+    "xp", "hp", "mp", "sp",
+];
 
 /// Build context queries for reaching a type from a root field.
 /// Tries both bare field and field-with-id-arg patterns.

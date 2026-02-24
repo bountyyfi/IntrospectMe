@@ -66,6 +66,11 @@ static SUBFIELD_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+// Pattern for "Unknown field X on type Y" (without suggestion) — field does NOT exist
+static UNKNOWN_FIELD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:Cannot query|Unknown) field "([^"]+)" on type "([^"]+)""#).unwrap()
+});
+
 pub struct GraphQLClient {
     client: Client,
     pub endpoint: String,
@@ -145,6 +150,26 @@ impl GraphQLClient {
         self.send_probe(&query).await
     }
 
+    /// Check if a specific field name exists on a type by sending a direct query.
+    /// Returns true if the field exists (i.e., no "Unknown field" error for it).
+    pub async fn field_exists(&self, query_str: &str, field_name: &str) -> Result<bool, String> {
+        let response = self.query(query_str).await?;
+
+        // If any error says this specific field is unknown, it doesn't exist
+        for error in &response.errors {
+            if let Some(caps) = UNKNOWN_FIELD_RE.captures(&error.message) {
+                if let Some(m) = caps.get(1) {
+                    if m.as_str() == field_name {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+
+        // No "unknown field" error for this field name => it exists
+        // (it may still error for other reasons like missing args, but the field is real)
+        Ok(true)
+    }
 }
 
 /// Result of a probe query, containing all extracted information.
