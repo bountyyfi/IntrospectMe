@@ -1,0 +1,102 @@
+name: Release & Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  version-bump:
+    name: Verify version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+    steps:
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+
+      - name: Extract version from tag
+        id: extract
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag version: $VERSION"
+
+      - name: Verify Cargo.toml version matches tag
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Cargo.toml version ($CARGO_VERSION) does not match tag version ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "Version verified: $CARGO_VERSION"
+
+  release:
+    name: Build & Release
+    needs: [version-bump]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: introspectme-linux-amd64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: introspectme-macos-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: introspectme-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: introspectme-windows-amd64.exe
+    steps:
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+
+      - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --no-default-features
+
+      - name: Rename binary (Unix)
+        if: runner.os != 'Windows'
+        run: cp target/${{ matrix.target }}/release/introspectme ${{ matrix.artifact }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        run: cp target/${{ matrix.target }}/release/introspectme.exe ${{ matrix.artifact }}
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    name: Publish to crates.io
+    needs: [version-bump, release]
+    runs-on: ubuntu-latest
+    if: always() && needs.release.result == 'success'
+    steps:
+      - uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98
+
+      - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libpq-dev
+
+      - name: Publish to crates.io
+        run: cargo publish --allow-dirty --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
