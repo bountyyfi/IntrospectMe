@@ -3,6 +3,12 @@ name = "introspectme"
 version = "0.1.0"
 edition = "2021"
 description = "GraphQL schema reconstruction via field suggestion error analysis"
+license = "MIT"
+repository = "https://github.com/bountyyfi/IntrospectMe"
+homepage = "https://github.com/bountyyfi/IntrospectMe"
+keywords = ["graphql", "security", "introspection", "schema", "pentest"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
 
 [[bin]]
 name = "introspectme"
