@@ -1,5 +1,8 @@
 # IntrospectMe
 
+[![Crates.io](https://img.shields.io/crates/v/introspectme)](https://crates.io/crates/introspectme)
+[![License](https://img.shields.io/badge/license-Source--Available-blue)](LICENSE)
+
 > GraphQL introspection is disabled. Your schema is not.
 
 GraphQL engines return field suggestion errors even with introspection fully disabled.
@@ -30,6 +33,12 @@ The 7 missed fields were short IDs. Everything sensitive was found.
 Requests look like normal failed queries in your logs. Because they are.
 
 -----
+
+## Install
+
+```bash
+cargo install introspectme
+```
 
 ## Usage
 
